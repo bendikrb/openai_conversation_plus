@@ -1,7 +1,6 @@
 {
   "domain": "openai_conversation_plus",
   "name": "OpenAI Conversation Plus",
-  "version": "0.0.0",
   "after_dependencies": ["assist_pipeline", "intent"],
   "codeowners": ["@balloob"],
   "config_flow": true,
@@ -9,5 +8,5 @@
   "documentation": "https://www.home-assistant.io/integrations/openai_conversation",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "requirements": ["openai==1.61.0"]
+  "requirements": ["openai==1.59.9"]
 }

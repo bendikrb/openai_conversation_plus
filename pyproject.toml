@@ -18,7 +18,7 @@ packages = [
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
 homeassistant = "^2025.2.4"
-openai = "^1.61.0"
+openai = "^1.59.9"
 
 [tool.ruff]
 src = [
