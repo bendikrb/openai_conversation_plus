@@ -1,14 +1,14 @@
 {
   "domain": "openai_conversation_plus",
   "name": "OpenAI Conversation Plus",
-  "version": "0.0.0",
   "after_dependencies": ["assist_pipeline", "intent"],
   "codeowners": ["@bendikrb"],
   "config_flow": true,
   "dependencies": ["conversation"],
   "documentation": "https://github.com/bendikrb/openai_conversation_plus",
-  "issue_tracker": "https://github.com/bendikrb/openai_conversation_plus/issues",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "requirements": ["openai==1.61.0"]
+  "issue_tracker": "https://github.com/bendikrb/openai_conversation_plus/issues",
+  "requirements": ["openai==1.61.0"],
+  "version": "0.0.0"
 }
