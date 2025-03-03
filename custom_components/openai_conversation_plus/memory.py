@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from mem0 import AsyncMemoryClient
 
 os.environ["MEM0_TELEMETRY"] = "false"
 
-def get_memory_client(host: str | None = None, api_key: str | None = None) -> AsyncMemoryClient:
+
+class MemorySettings(TypedDict):
+    throttle_seconds: int
+    message_history_length: int
+    memory_min_score: float
+
+
+def get_memory_client(
+    host: str | None = None, api_key: str | None = None
+) -> AsyncMemoryClient:
     from mem0 import AsyncMemoryClient
 
     conf = {
@@ -25,7 +34,9 @@ def format_memories(memory_results: dict, score_threshold: float = 0.2) -> str:
     formatted_memories = []
     for result in memory_results.get("results", []):
         if result["score"] >= score_threshold:
-            formatted_memories.append(f"- {result['memory']} (score: {result['score']:.2f})")  # noqa: PERF401
+            formatted_memories.append(  # noqa: PERF401
+                f"- {result['memory']} (score: {result['score']:.2f})"
+            )
     if formatted_memories:
         return "Relevant memories:\n" + "\n".join(formatted_memories)
     return ""

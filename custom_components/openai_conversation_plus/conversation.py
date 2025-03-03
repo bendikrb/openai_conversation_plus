@@ -1,6 +1,7 @@
 """Conversation support for OpenAI."""
 import asyncio
 from collections.abc import AsyncGenerator, Callable
+from datetime import datetime
 import json
 from typing import Any, Literal, cast
 
@@ -44,7 +45,7 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
-from .memory import format_memories, get_memory_client
+from .memory import MemorySettings, format_memories, get_memory_client
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
@@ -192,6 +193,9 @@ class OpenAIConversationPlusEntity(
 
     _memory = None
     _memory_min_score = 0.25
+    _memory_update_task: asyncio.Task | None = None
+    _memory_last_update_time: datetime | None = None
+    _memory_settings: MemorySettings
 
     def __init__(self, entry: OpenAIPlusConfigEntry) -> None:
         """Initialize the agent."""
@@ -209,8 +213,6 @@ class OpenAIConversationPlusEntity(
                 conversation.ConversationEntityFeature.CONTROL
             )
 
-        self._memory_update_task = None
-        self._memory_last_update_time = None
         self._memory_settings = {
             "throttle_seconds": 30,
             "message_history_length": 5,
@@ -360,8 +362,6 @@ class OpenAIConversationPlusEntity(
         # Reload as we update device info + entity name + supported features
         await hass.config_entries.async_reload(entry.entry_id)
 
-
-
     async def _schedule_memory_update(self, chat_log: conversation.ChatLog):
         """Schedules a throttled memory update."""
 
@@ -373,10 +373,9 @@ class OpenAIConversationPlusEntity(
                 _LOGGER.debug("Cancelled previous memory update task.")
 
         self._last_update_time = current_time
-        self._update_memory_task = self.hass.async_create_task(
+        self._memory_update_task = self.hass.async_create_task(
             self._throttled_memory_update(chat_log)
         )
-
 
     async def _throttled_memory_update(self, chat_log: conversation.ChatLog):
         """Throttled memory update logic."""
@@ -384,11 +383,18 @@ class OpenAIConversationPlusEntity(
 
         messages_to_process = [
             {"role": msg.role, "content": msg.content}
-            for msg in chat_log.content[-self._memory_settings["message_history_length"]:]
-            if isinstance(msg, (conversation.UserContent, conversation.AssistantContent)) and msg.content
+            for msg in chat_log.content[
+                -self._memory_settings["message_history_length"] :
+            ]
+            if isinstance(
+                msg, (conversation.UserContent, conversation.AssistantContent)
+            )
+            and msg.content
         ]
 
         if messages_to_process:
-            await self._memory.add(messages=messages_to_process, user_id=chat_log.conversation_id)
+            await self._memory.add(
+                messages=messages_to_process, user_id=chat_log.conversation_id
+            )
         else:
             _LOGGER.debug("No messages to process for memory update.")
