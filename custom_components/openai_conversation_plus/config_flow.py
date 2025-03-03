@@ -218,15 +218,15 @@ async def openai_config_option_schema(
         vol.Required(
             CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
         ): bool,
-        vol.Optional(
+        vol.Required(
             CONF_MEMORY_URL,
             description={"suggested_value": options.get(CONF_MEMORY_URL)},
         ): str,
-        vol.Optional(
+        vol.Required(
             CONF_MEMORY_API_KEY,
             description={"suggested_value": options.get(CONF_MEMORY_API_KEY)},
         ): str,
-        vol.Optional(
+        vol.Required(
             CONF_MEMORY_USER_ID_MAP,
             description={"suggested_value": user_id_map},
         ): ObjectSelector(),

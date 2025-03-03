@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from typing import TYPE_CHECKING, NotRequired, TypedDict
-
-if TYPE_CHECKING:
-    from mem0 import AsyncMemoryClient
-
-os.environ["MEM0_TELEMETRY"] = "false"
+from typing import NotRequired, TypedDict
 
 
 class MemorySettings(TypedDict):
@@ -37,18 +31,6 @@ class MemoryRelation(TypedDict):
 class MemorySearchResults(TypedDict):
     results: list[MemoryResult]
     relations: list[MemoryRelation]
-
-
-def get_memory_client(
-    host: str | None = None, api_key: str | None = None
-) -> AsyncMemoryClient:
-    from mem0 import AsyncMemoryClient
-
-    conf = {
-        "api_key": api_key,
-        "host": host,
-    }
-    return AsyncMemoryClient(**conf)
 
 
 def format_memories(memory_results: dict, score_threshold: float = 0.2) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import openai
 import voluptuous as vol
 
@@ -31,6 +33,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 type OpenAIPlusConfigEntry = ConfigEntry[openai.AsyncClient]
 
 
+# noinspection PyUnusedLocal
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up OpenAI Conversation Plus."""
 
@@ -87,6 +90,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+# noinspection PyTypeChecker
 async def async_setup_entry(hass: HomeAssistant, entry: OpenAIPlusConfigEntry) -> bool:
     """Set up OpenAI Conversation Plus from a config entry."""
     client = openai.AsyncOpenAI(
@@ -94,6 +98,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenAIPlusConfigEntry) -
         base_url=entry.data.get(CONF_BASE_URL),
         http_client=get_async_client(hass),
     )
+
+    os.environ["MEM0_TELEMETRY"] = "false"
 
     # Cache current platform data which gets added to each request (caching done by library)
     _ = await hass.async_add_executor_job(client.platform_headers)

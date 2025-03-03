@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 from typing import Any, Literal, cast
 
+from mem0 import AsyncMemoryClient
 import openai
 from openai._streaming import AsyncStream
 from openai._types import NOT_GIVEN
@@ -48,12 +49,7 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
-from .memory import (
-    MemorySearchResults,
-    MemorySettings,
-    format_memories,
-    get_memory_client,
-)
+from .memory import MemorySearchResults, MemorySettings, format_memories
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
@@ -227,11 +223,9 @@ class OpenAIConversationPlusEntity(
             "message_history_length": 5,
             "memory_min_score": 0.25,
         }
-        self._memory = get_memory_client(
+        self._memory = AsyncMemoryClient(
             api_key=self.entry.options.get(CONF_MEMORY_API_KEY),
             host=self.entry.options.get(CONF_MEMORY_URL),
-            # api_key="m0-7QG3vEOUWxGNbmO1pt3mh3mgaw85AswR8OMATAQq",
-            # host="https://mem0.kare.brenne.nu",
         )
 
     @property
@@ -388,8 +382,7 @@ class OpenAIConversationPlusEntity(
     async def _schedule_memory_update(
         self, chat_log: conversation.ChatLog, user_input: conversation.ConversationInput
     ):
-        """Schedules a throttled memory update."""
-
+        """Schedule a throttled memory update."""
         current_time = dt_util.utcnow()
         time_diff = (current_time - self._memory_last_update_time).total_seconds()
         if time_diff < self._memory_settings["throttle_seconds"]:
