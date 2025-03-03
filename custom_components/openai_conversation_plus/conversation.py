@@ -195,7 +195,7 @@ class OpenAIConversationPlusEntity(
     _attr_has_entity_name = True
     _attr_name = None
 
-    _memory = None
+    _memory_client = None
     _memory_min_score = 0.25
     _memory_update_task: asyncio.Task | None = None
     _memory_last_update_time: datetime
@@ -223,15 +223,20 @@ class OpenAIConversationPlusEntity(
             "message_history_length": 5,
             "memory_min_score": 0.25,
         }
-        self._memory = AsyncMemoryClient(
-            api_key=self.entry.options.get(CONF_MEMORY_API_KEY),
-            host=self.entry.options.get(CONF_MEMORY_URL),
-        )
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
         """Return a list of supported languages."""
         return MATCH_ALL
+
+    @property
+    def _memory(self) -> AsyncMemoryClient:
+        if self._memory_client is None:
+            self._memory_client = AsyncMemoryClient(
+                api_key=self.entry.options.get(CONF_MEMORY_API_KEY),
+                host=self.entry.options.get(CONF_MEMORY_URL),
+            )
+        return self._memory_client
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
