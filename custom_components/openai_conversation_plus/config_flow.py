@@ -36,12 +36,14 @@ from .const import (
     CONF_PROMPT,
     CONF_REASONING_EFFORT,
     CONF_RECOMMENDED,
+    CONF_SMART_CHAT_MODEL,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_REASONING_EFFORT,
+    RECOMMENDED_SMART_CHAT_MODEL,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     UNSUPPORTED_MODELS,
@@ -68,10 +70,14 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    client = openai.AsyncOpenAI(api_key=data[CONF_API_KEY], base_url=data.get(CONF_BASE_URL))
+    client = openai.AsyncOpenAI(
+        api_key=data[CONF_API_KEY], base_url=data.get(CONF_BASE_URL)
+    )
+    # noinspection PyTypeChecker
     await hass.async_add_executor_job(client.with_options(timeout=10.0).models.list)
 
 
+# noinspection PyTypeChecker
 class OpenAIPlusConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for OpenAI Conversation Plus."""
 
@@ -116,6 +122,7 @@ class OpenAIPlusConfigFlow(ConfigFlow, domain=DOMAIN):
         return OpenAIPlusOptionsFlow(config_entry)
 
 
+# noinspection PyTypeChecker
 class OpenAIPlusOptionsFlow(OptionsFlow):
     """OpenAI config flow options handler."""
 
@@ -139,6 +146,8 @@ class OpenAIPlusOptionsFlow(OptionsFlow):
 
                 if user_input.get(CONF_CHAT_MODEL) in UNSUPPORTED_MODELS:
                     errors[CONF_CHAT_MODEL] = "model_not_supported"
+                elif user_input.get(CONF_SMART_CHAT_MODEL) in UNSUPPORTED_MODELS:
+                    errors[CONF_SMART_CHAT_MODEL] = "model_not_supported"
                 else:
                     return self.async_create_entry(title="", data=user_input)
             else:
@@ -206,6 +215,11 @@ def openai_config_option_schema(
                 CONF_CHAT_MODEL,
                 description={"suggested_value": options.get(CONF_CHAT_MODEL)},
                 default=RECOMMENDED_CHAT_MODEL,
+            ): str,
+            vol.Optional(
+                CONF_SMART_CHAT_MODEL,
+                description={"suggested_value": options.get(CONF_SMART_CHAT_MODEL)},
+                default=RECOMMENDED_SMART_CHAT_MODEL,
             ): str,
             vol.Optional(
                 CONF_MAX_TOKENS,
