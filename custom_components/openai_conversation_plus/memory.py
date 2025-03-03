@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from mem0 import AsyncMemoryClient
@@ -15,6 +15,28 @@ class MemorySettings(TypedDict):
     throttle_seconds: int
     message_history_length: int
     memory_min_score: float
+
+
+class MemoryResult(TypedDict):
+    id: str
+    memory: str
+    hash: str
+    meta: NotRequired[dict[str, any]]
+    score: float
+    created_at: str
+    updated_at: NotRequired[str]
+    user_id: str
+
+
+class MemoryRelation(TypedDict):
+    source: str
+    relationship: str
+    destination: str
+
+
+class MemorySearchResults(TypedDict):
+    results: list[MemoryResult]
+    relations: list[MemoryRelation]
 
 
 def get_memory_client(

@@ -21,6 +21,7 @@ from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
+    ObjectSelector,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -33,6 +34,9 @@ from .const import (
     CONF_BASE_URL,
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
+    CONF_MEMORY_API_KEY,
+    CONF_MEMORY_URL,
+    CONF_MEMORY_USER_ID_MAP,
     CONF_PROMPT,
     CONF_REASONING_EFFORT,
     CONF_RECOMMENDED,
@@ -158,9 +162,12 @@ class OpenAIPlusOptionsFlow(OptionsFlow):
                     CONF_RECOMMENDED: user_input[CONF_RECOMMENDED],
                     CONF_PROMPT: user_input[CONF_PROMPT],
                     CONF_LLM_HASS_API: user_input[CONF_LLM_HASS_API],
+                    CONF_MEMORY_API_KEY: user_input[CONF_MEMORY_API_KEY],
+                    CONF_MEMORY_URL: user_input[CONF_MEMORY_URL],
+                    CONF_MEMORY_USER_ID_MAP: user_input[CONF_MEMORY_USER_ID_MAP],
                 }
 
-        schema = openai_config_option_schema(self.hass, options)
+        schema = await openai_config_option_schema(self.hass, options)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(schema),
@@ -168,7 +175,7 @@ class OpenAIPlusOptionsFlow(OptionsFlow):
         )
 
 
-def openai_config_option_schema(
+async def openai_config_option_schema(
     hass: HomeAssistant,
     options: dict[str, Any] | MappingProxyType[str, Any],
 ) -> VolDictType:
@@ -187,6 +194,13 @@ def openai_config_option_schema(
         for api in llm.async_get_apis(hass)
     )
 
+    user_id_map_data = options.get(CONF_MEMORY_USER_ID_MAP, {})
+    user_id_map = {
+        user.id: user_id_map_data.get(user.id, "")
+        for user in await hass.auth.async_get_users()
+        if not user.system_generated
+    }
+
     schema: VolDictType = {
         vol.Optional(
             CONF_PROMPT,
@@ -204,6 +218,18 @@ def openai_config_option_schema(
         vol.Required(
             CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
         ): bool,
+        vol.Optional(
+            CONF_MEMORY_URL,
+            description={"suggested_value": options.get(CONF_MEMORY_URL)},
+        ): str,
+        vol.Optional(
+            CONF_MEMORY_API_KEY,
+            description={"suggested_value": options.get(CONF_MEMORY_API_KEY)},
+        ): str,
+        vol.Optional(
+            CONF_MEMORY_USER_ID_MAP,
+            description={"suggested_value": user_id_map},
+        ): ObjectSelector(),
     }
 
     if options.get(CONF_RECOMMENDED):

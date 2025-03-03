@@ -31,12 +31,17 @@
                     "top_p": "Top P",
                     "llm_hass_api": "Control Home Assistant",
                     "recommended": "Recommended model settings",
-                    "reasoning_effort": "Reasoning effort"
+                    "reasoning_effort": "Reasoning effort",
+                    "memory_api_key": "Mem0 API Key",
+                    "memory_url": "Mem0 URL",
+                    "memory_user_id_map":  "Mem0 User ID Map"
                 },
                 "data_description": {
                     "prompt": "Instruct how the LLM should respond. This can be a template.",
                     "reasoning_effort": "How many reasoning tokens the model should generate before creating a response to the prompt (for certain reasoning models)",
-                    "smart_chat_model": "A more capable model that can be used by the primary model for complex tasks"
+                    "smart_chat_model": "A more capable model that can be used by the primary model for complex tasks",
+                    "memory_url": "URL to self-hosted mem0 server.",
+                    "memory_user_id_map":  "Map HA user ids to mem0 user ids."
                 }
             }
         },

@@ -33,6 +33,9 @@ from . import OpenAIPlusConfigEntry
 from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
+    CONF_MEMORY_API_KEY,
+    CONF_MEMORY_URL,
+    CONF_MEMORY_USER_ID_MAP,
     CONF_PROMPT,
     CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
@@ -45,7 +48,12 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
-from .memory import MemorySettings, format_memories, get_memory_client
+from .memory import (
+    MemorySearchResults,
+    MemorySettings,
+    format_memories,
+    get_memory_client,
+)
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
@@ -194,7 +202,7 @@ class OpenAIConversationPlusEntity(
     _memory = None
     _memory_min_score = 0.25
     _memory_update_task: asyncio.Task | None = None
-    _memory_last_update_time: datetime | None = None
+    _memory_last_update_time: datetime
     _memory_settings: MemorySettings
 
     def __init__(self, entry: OpenAIPlusConfigEntry) -> None:
@@ -213,14 +221,17 @@ class OpenAIConversationPlusEntity(
                 conversation.ConversationEntityFeature.CONTROL
             )
 
+        self._memory_last_update_time = dt_util.utcnow()
         self._memory_settings = {
             "throttle_seconds": 30,
             "message_history_length": 5,
             "memory_min_score": 0.25,
         }
         self._memory = get_memory_client(
-            api_key="m0-7QG3vEOUWxGNbmO1pt3mh3mgaw85AswR8OMATAQq",
-            host="https://mem0.kare.brenne.nu",
+            api_key=self.entry.options.get(CONF_MEMORY_API_KEY),
+            host=self.entry.options.get(CONF_MEMORY_URL),
+            # api_key="m0-7QG3vEOUWxGNbmO1pt3mh3mgaw85AswR8OMATAQq",
+            # host="https://mem0.kare.brenne.nu",
         )
 
     @property
@@ -250,11 +261,16 @@ class OpenAIConversationPlusEntity(
         """Process a sentence."""
         mem_params = {
             "limit": 10,
+            "agent_id": user_input.agent_id,
         }
-        if user_input.context and user_input.context.user_id:
-            mem_params["user_id"] = user_input.context.user_id
+        if user_id := self._memory_user_id(user_input):
+            mem_params["user_id"] = user_id
         try:
-            memory_data = self._memory.search(user_input.text, **mem_params)
+            # noinspection PyTypeChecker
+            memory_data: MemorySearchResults = await self._memory.search(
+                user_input.text,
+                **mem_params,
+            )
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Error searching memory: %s", err)
             memory_data = {"results": [], "relations": []}
@@ -345,7 +361,7 @@ class OpenAIConversationPlusEntity(
                 break
 
         # Schedule throttled memory update
-        await self._schedule_memory_update(chat_log)
+        await self._schedule_memory_update(chat_log, user_input)
 
         intent_response = intent.IntentResponse(language=user_input.language)
         assert type(chat_log.content[-1]) is conversation.AssistantContent
@@ -362,7 +378,16 @@ class OpenAIConversationPlusEntity(
         # Reload as we update device info + entity name + supported features
         await hass.config_entries.async_reload(entry.entry_id)
 
-    async def _schedule_memory_update(self, chat_log: conversation.ChatLog):
+    def _memory_user_id(self, user_input: conversation.ConversationInput) -> str | None:
+        if user_input.context and user_input.context.user_id:
+            user_ids = self.entry.options.get(CONF_MEMORY_USER_ID_MAP, {})
+            if user_id_mapped := user_ids.get(user_input.context.user_id):
+                return user_id_mapped
+        return None
+
+    async def _schedule_memory_update(
+        self, chat_log: conversation.ChatLog, user_input: conversation.ConversationInput
+    ):
         """Schedules a throttled memory update."""
 
         current_time = dt_util.utcnow()
@@ -372,12 +397,14 @@ class OpenAIConversationPlusEntity(
                 self._memory_update_task.cancel()
                 _LOGGER.debug("Cancelled previous memory update task.")
 
-        self._last_update_time = current_time
+        self._memory_last_update_time = current_time
         self._memory_update_task = self.hass.async_create_task(
-            self._throttled_memory_update(chat_log)
+            self._throttled_memory_update(chat_log, user_input)
         )
 
-    async def _throttled_memory_update(self, chat_log: conversation.ChatLog):
+    async def _throttled_memory_update(
+        self, chat_log: conversation.ChatLog, user_input: conversation.ConversationInput
+    ):
         """Throttled memory update logic."""
         await asyncio.sleep(self._memory_settings["throttle_seconds"])
 
@@ -393,8 +420,14 @@ class OpenAIConversationPlusEntity(
         ]
 
         if messages_to_process:
+            mem_params = {
+                "agent_id": user_input.agent_id,
+            }
+            if user_id := self._memory_user_id(user_input):
+                mem_params["user_id"] = user_id
             await self._memory.add(
-                messages=messages_to_process, user_id=chat_log.conversation_id
+                messages=messages_to_process,
+                **mem_params,
             )
         else:
             _LOGGER.debug("No messages to process for memory update.")
