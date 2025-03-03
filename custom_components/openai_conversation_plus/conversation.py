@@ -1,5 +1,5 @@
 """Conversation support for OpenAI."""
-
+import asyncio
 from collections.abc import AsyncGenerator, Callable
 import json
 from typing import Any, Literal, cast
@@ -26,6 +26,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import chat_session, device_registry as dr, intent, llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import OpenAIPlusConfigEntry
 from .const import (
@@ -36,18 +37,20 @@ from .const import (
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
-    LOGGER,
+    LOGGER as _LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
+from .memory import format_memories, get_memory_client
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
 
 
+# noinspection PyUnusedLocal
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: OpenAIPlusConfigEntry,
@@ -88,7 +91,7 @@ def _convert_content_to_param(
             role = "developer"
         return cast(
             ChatCompletionMessageParam,
-            {"role": content.role, "content": content.content},  # type: ignore[union-attr]
+            {"role": role, "content": content.content},  # type: ignore[union-attr]
         )
 
     # Handle the Assistant content including tool calls.
@@ -117,7 +120,7 @@ async def _transform_stream(
     current_tool_call: dict | None = None
 
     async for chunk in result:
-        LOGGER.debug("Received chunk: %s", chunk)
+        _LOGGER.debug("Received chunk: %s", chunk)
         choice = chunk.choices[0]
 
         if choice.finish_reason:
@@ -147,6 +150,7 @@ async def _transform_stream(
 
         # When doing tool calls, we should always have a tool call
         # object or we have gotten stopped above with a finish_reason set.
+        # noinspection PyUnboundLocalVariable
         if (
             not delta.tool_calls
             or not (delta_tool_call := delta.tool_calls[0])
@@ -186,6 +190,9 @@ class OpenAIConversationPlusEntity(
     _attr_has_entity_name = True
     _attr_name = None
 
+    _memory = None
+    _memory_min_score = 0.25
+
     def __init__(self, entry: OpenAIPlusConfigEntry) -> None:
         """Initialize the agent."""
         self.entry = entry
@@ -201,6 +208,18 @@ class OpenAIConversationPlusEntity(
             self._attr_supported_features = (
                 conversation.ConversationEntityFeature.CONTROL
             )
+
+        self._memory_update_task = None
+        self._memory_last_update_time = None
+        self._memory_settings = {
+            "throttle_seconds": 30,
+            "message_history_length": 5,
+            "memory_min_score": 0.25,
+        }
+        self._memory = get_memory_client(
+            api_key="m0-7QG3vEOUWxGNbmO1pt3mh3mgaw85AswR8OMATAQq",
+            host="https://mem0.kare.brenne.nu",
+        )
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -227,6 +246,23 @@ class OpenAIConversationPlusEntity(
         self, user_input: conversation.ConversationInput
     ) -> conversation.ConversationResult:
         """Process a sentence."""
+        mem_params = {
+            "limit": 10,
+        }
+        if user_input.context and user_input.context.user_id:
+            mem_params["user_id"] = user_input.context.user_id
+        try:
+            memory_data = self._memory.search(user_input.text, **mem_params)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Error searching memory: %s", err)
+            memory_data = {"results": [], "relations": []}
+
+        formatted_memory_string = format_memories(memory_data, self._memory_min_score)
+        if user_input.extra_system_prompt:
+            user_input.extra_system_prompt += f"\n\n{formatted_memory_string}"
+        else:
+            user_input.extra_system_prompt = formatted_memory_string
+
         with (
             chat_session.async_get_chat_session(
                 self.hass, user_input.conversation_id
@@ -288,10 +324,10 @@ class OpenAIConversationPlusEntity(
             try:
                 result = await client.chat.completions.create(**model_args)
             except openai.RateLimitError as err:
-                LOGGER.error("Rate limited by OpenAI: %s", err)
+                _LOGGER.error("Rate limited by OpenAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
-                LOGGER.error("Error talking to OpenAI: %s", err)
+                _LOGGER.error("Error talking to OpenAI: %s", err)
                 raise HomeAssistantError("Error talking to OpenAI") from err
 
             messages.extend(
@@ -306,6 +342,9 @@ class OpenAIConversationPlusEntity(
             if not chat_log.unresponded_tool_results:
                 break
 
+        # Schedule throttled memory update
+        await self._schedule_memory_update(chat_log)
+
         intent_response = intent.IntentResponse(language=user_input.language)
         assert type(chat_log.content[-1]) is conversation.AssistantContent
         intent_response.async_set_speech(chat_log.content[-1].content or "")
@@ -313,9 +352,43 @@ class OpenAIConversationPlusEntity(
             response=intent_response, conversation_id=chat_log.conversation_id
         )
 
+    # noinspection PyMethodMayBeStatic
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
     ) -> None:
         """Handle options update."""
         # Reload as we update device info + entity name + supported features
         await hass.config_entries.async_reload(entry.entry_id)
+
+
+
+    async def _schedule_memory_update(self, chat_log: conversation.ChatLog):
+        """Schedules a throttled memory update."""
+
+        current_time = dt_util.utcnow()
+        time_diff = (current_time - self._memory_last_update_time).total_seconds()
+        if time_diff < self._memory_settings["throttle_seconds"]:
+            if self._memory_update_task and not self._memory_update_task.done():
+                self._memory_update_task.cancel()
+                _LOGGER.debug("Cancelled previous memory update task.")
+
+        self._last_update_time = current_time
+        self._update_memory_task = self.hass.async_create_task(
+            self._throttled_memory_update(chat_log)
+        )
+
+
+    async def _throttled_memory_update(self, chat_log: conversation.ChatLog):
+        """Throttled memory update logic."""
+        await asyncio.sleep(self._memory_settings["throttle_seconds"])
+
+        messages_to_process = [
+            {"role": msg.role, "content": msg.content}
+            for msg in chat_log.content[-self._memory_settings["message_history_length"]:]
+            if isinstance(msg, (conversation.UserContent, conversation.AssistantContent)) and msg.content
+        ]
+
+        if messages_to_process:
+            await self._memory.add(messages=messages_to_process, user_id=chat_log.conversation_id)
+        else:
+            _LOGGER.debug("No messages to process for memory update.")
