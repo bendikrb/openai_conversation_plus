@@ -1,10 +1,9 @@
-[tool.poetry]
+[project]
 name = "openai_conversation_plus"
 version = "0.0.0"
-license = "MIT"
-description = "Home Assistant developer tools"
-authors = ["Bendik R. Brenne <bendik@konstant.no>"]
+description = ""
 readme = "README.md"
+requires-python = ">=3.13,<4"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: AsyncIO",
@@ -14,12 +13,16 @@ classifiers = [
 packages = [
   { include = "openai_conversation_plus", from = "custom_components", to = "openai_conversation_plus" },
 ]
+dependencies = [
+  "homeassistant>=2025.3.4",
+  "openai==1.68.2",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.13,<3.14"
-homeassistant = "2025.3.0b3"
-openai = "1.61.0"
-mem0ai = "^0.1.60"
+[dependency-groups]
+dev = [
+  "ruff>=0.11.2",
+]
+
 
 [tool.ruff]
 src = [
@@ -75,8 +78,3 @@ disable = [
   "used-before-assignment",
   "missing-function-docstring",
 ]
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
