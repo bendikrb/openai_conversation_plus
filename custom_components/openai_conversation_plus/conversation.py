@@ -3,22 +3,30 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 from datetime import datetime
 import json
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
-from mem0 import AsyncMemoryClient
+from memory import MemorySettings
 import openai
 from openai._streaming import AsyncStream
-from openai._types import NOT_GIVEN
-from openai.types.chat import (
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionChunk,
-    ChatCompletionMessageParam,
-    ChatCompletionMessageToolCallParam,
-    ChatCompletionToolMessageParam,
-    ChatCompletionToolParam,
+from openai.types.responses import (
+    EasyInputMessageParam,
+    FunctionToolParam,
+    ResponseCompletedEvent,
+    ResponseErrorEvent,
+    ResponseFailedEvent,
+    ResponseFunctionCallArgumentsDeltaEvent,
+    ResponseFunctionCallArgumentsDoneEvent,
+    ResponseFunctionToolCall,
+    ResponseFunctionToolCallParam,
+    ResponseIncompleteEvent,
+    ResponseInputParam,
+    ResponseOutputItemAddedEvent,
+    ResponseOutputMessage,
+    ResponseStreamEvent,
+    ResponseTextDeltaEvent,
+    ToolParam,
 )
-from openai.types.chat.chat_completion_message_tool_call_param import Function
-from openai.types.shared_params import FunctionDefinition
+from openai.types.responses.response_input_param import FunctionCallOutput
 from voluptuous_openapi import convert
 
 from homeassistant.components import assist_pipeline, conversation
@@ -34,9 +42,6 @@ from . import OpenAIPlusConfigEntry
 from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
-    CONF_MEMORY_API_KEY,
-    CONF_MEMORY_URL,
-    CONF_MEMORY_USER_ID_MAP,
     CONF_PROMPT,
     CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
@@ -49,145 +54,147 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
-from .memory import MemorySearchResults, MemorySettings, format_memories
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
 
 
-# noinspection PyUnusedLocal
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: OpenAIPlusConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up conversation entities."""
-    agent = OpenAIConversationPlusEntity(config_entry)
+    agent = OpenAIConversationEntity(config_entry)
     async_add_entities([agent])
 
 
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
-) -> ChatCompletionToolParam:
+) -> FunctionToolParam:
     """Format tool specification."""
-    tool_spec = FunctionDefinition(
+    return FunctionToolParam(
+        type="function",
         name=tool.name,
         parameters=convert(tool.parameters, custom_serializer=custom_serializer),
+        description=tool.description,
+        strict=False,
     )
-    if tool.description:
-        tool_spec["description"] = tool.description
-    return ChatCompletionToolParam(type="function", function=tool_spec)
 
 
+# noinspection PyTypeChecker
 def _convert_content_to_param(
     content: conversation.Content,
-) -> ChatCompletionMessageParam:
+) -> ResponseInputParam:
     """Convert any native chat message for this agent to the native format."""
-    if content.role == "tool_result":
-        assert type(content) is conversation.ToolResultContent
-        return ChatCompletionToolMessageParam(
-            role="tool",
-            tool_call_id=content.tool_call_id,
-            content=json.dumps(content.tool_result),
-        )
-    if content.role != "assistant" or not content.tool_calls:  # type: ignore[union-attr]
-        role = content.role
+    messages: ResponseInputParam = []
+    if isinstance(content, conversation.ToolResultContent):
+        return [
+            FunctionCallOutput(
+                type="function_call_output",
+                call_id=content.tool_call_id,
+                output=json.dumps(content.tool_result),
+            )
+        ]
+
+    if content.content:
+        role: Literal["user", "assistant", "system", "developer"] = content.role
         if role == "system":
             role = "developer"
-        return cast(
-            ChatCompletionMessageParam,
-            {"role": role, "content": content.content},  # type: ignore[union-attr]
+        messages.append(
+            EasyInputMessageParam(type="message", role=role, content=content.content)
         )
 
-    # Handle the Assistant content including tool calls.
-    assert type(content) is conversation.AssistantContent
-    return ChatCompletionAssistantMessageParam(
-        role="assistant",
-        content=content.content,
-        tool_calls=[
-            ChatCompletionMessageToolCallParam(
-                id=tool_call.id,
-                function=Function(
-                    arguments=json.dumps(tool_call.tool_args),
-                    name=tool_call.tool_name,
-                ),
-                type="function",
+    if isinstance(content, conversation.AssistantContent) and content.tool_calls:
+        messages.extend(
+            ResponseFunctionToolCallParam(
+                type="function_call",
+                name=tool_call.tool_name,
+                arguments=json.dumps(tool_call.tool_args),
+                call_id=tool_call.id,
             )
             for tool_call in content.tool_calls
-        ],
-    )
+        )
+    return messages
 
 
-async def _transform_stream(
-    result: AsyncStream[ChatCompletionChunk],
+# noinspection PyUnboundLocalVariable
+async def _transform_stream(  # noqa: C901
+    chat_log: conversation.ChatLog,
+    result: AsyncStream[ResponseStreamEvent],
 ) -> AsyncGenerator[conversation.AssistantContentDeltaDict]:
     """Transform an OpenAI delta stream into HA format."""
-    current_tool_call: dict | None = None
+    async for event in result:
+        _LOGGER.debug("Received event: %s", event)
 
-    async for chunk in result:
-        _LOGGER.debug("Received chunk: %s", chunk)
-        choice = chunk.choices[0]
-
-        if choice.finish_reason:
-            if current_tool_call:
-                yield {
-                    "tool_calls": [
-                        llm.ToolInput(
-                            id=current_tool_call["id"],
-                            tool_name=current_tool_call["tool_name"],
-                            tool_args=json.loads(current_tool_call["tool_args"]),
-                        )
-                    ]
-                }
-
-            break
-
-        delta = chunk.choices[0].delta
-
-        # We can yield delta messages not continuing or starting tool calls
-        if current_tool_call is None and not delta.tool_calls:
-            yield {  # type: ignore[misc]
-                key: value
-                for key in ("role", "content")
-                if (value := getattr(delta, key)) is not None
-            }
-            continue
-
-        # When doing tool calls, we should always have a tool call
-        # object or we have gotten stopped above with a finish_reason set.
-        # noinspection PyUnboundLocalVariable
-        if (
-            not delta.tool_calls
-            or not (delta_tool_call := delta.tool_calls[0])
-            or not delta_tool_call.function
-        ):
-            raise ValueError("Expected delta with tool call")
-
-        if current_tool_call and delta_tool_call.index == current_tool_call["index"]:
-            current_tool_call["tool_args"] += delta_tool_call.function.arguments or ""
-            continue
-
-        # We got tool call with new index, so we need to yield the previous
-        if current_tool_call:
+        if isinstance(event, ResponseOutputItemAddedEvent):
+            if isinstance(event.item, ResponseOutputMessage):
+                yield {"role": event.item.role}
+            elif isinstance(event.item, ResponseFunctionToolCall):
+                current_tool_call = event.item
+        elif isinstance(event, ResponseTextDeltaEvent):
+            yield {"content": event.delta}
+        elif isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
+            current_tool_call.arguments += event.delta
+        elif isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
+            current_tool_call.status = "completed"
             yield {
                 "tool_calls": [
                     llm.ToolInput(
-                        id=current_tool_call["id"],
-                        tool_name=current_tool_call["tool_name"],
-                        tool_args=json.loads(current_tool_call["tool_args"]),
+                        id=current_tool_call.call_id,
+                        tool_name=current_tool_call.name,
+                        tool_args=json.loads(current_tool_call.arguments),
                     )
                 ]
             }
+        elif isinstance(event, ResponseCompletedEvent):
+            if event.response.usage is not None:
+                _LOGGER.debug("chat_log.async_trace(%s)", {
+                    "stats": {
+                        "input_tokens": event.response.usage.input_tokens,
+                        "output_tokens": event.response.usage.output_tokens,
+                    },
+                })
+        elif isinstance(event, ResponseIncompleteEvent):
+            if event.response.usage is not None:
+                _LOGGER.debug("chat_log.async_trace(%s)", {
+                    "stats": {
+                        "input_tokens": event.response.usage.input_tokens,
+                        "output_tokens": event.response.usage.output_tokens,
+                    }
+                })
 
-        current_tool_call = {
-            "index": delta_tool_call.index,
-            "id": delta_tool_call.id,
-            "tool_name": delta_tool_call.function.name,
-            "tool_args": delta_tool_call.function.arguments or "",
-        }
+            if (
+                event.response.incomplete_details
+                and event.response.incomplete_details.reason
+            ):
+                reason = event.response.incomplete_details.reason
+            else:
+                reason = "unknown reason"
+
+            if reason == "max_output_tokens":
+                reason = "max output tokens reached"
+            elif reason == "content_filter":
+                reason = "content filter triggered"
+
+            raise HomeAssistantError(f"OpenAI response incomplete: {reason}")
+        elif isinstance(event, ResponseFailedEvent):
+            if event.response.usage is not None:
+                _LOGGER.debug("chat_log.async_trace(%s)", {
+                    "stats": {
+                        "input_tokens": event.response.usage.input_tokens,
+                        "output_tokens": event.response.usage.output_tokens,
+                    }
+                })
+            reason = "unknown reason"
+            if event.response.error is not None:
+                reason = event.response.error.message
+            raise HomeAssistantError(f"OpenAI response failed: {reason}")
+        elif isinstance(event, ResponseErrorEvent):
+            raise HomeAssistantError(f"OpenAI response error: {event.message}")
 
 
-class OpenAIConversationPlusEntity(
+class OpenAIConversationEntity(
     conversation.ConversationEntity, conversation.AbstractConversationAgent
 ):
     """OpenAI conversation agent."""
@@ -217,26 +224,10 @@ class OpenAIConversationPlusEntity(
                 conversation.ConversationEntityFeature.CONTROL
             )
 
-        self._memory_last_update_time = dt_util.utcnow()
-        self._memory_settings = {
-            "throttle_seconds": 30,
-            "message_history_length": 5,
-            "memory_min_score": 0.25,
-        }
-
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
         """Return a list of supported languages."""
         return MATCH_ALL
-
-    @property
-    def _memory(self) -> AsyncMemoryClient:
-        if self._memory_client is None:
-            self._memory_client = AsyncMemoryClient(
-                api_key=self.entry.options.get(CONF_MEMORY_API_KEY),
-                host=self.entry.options.get(CONF_MEMORY_URL),
-            )
-        return self._memory_client
 
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
@@ -255,35 +246,12 @@ class OpenAIConversationPlusEntity(
         await super().async_will_remove_from_hass()
 
     async def async_process(
-        self, user_input: conversation.ConversationInput
+        self,
+        user_input: conversation.ConversationInput,
     ) -> conversation.ConversationResult:
         """Process a sentence."""
-        mem_params = {
-            "limit": 10,
-            "agent_id": user_input.agent_id,
-        }
-        if user_id := self._memory_user_id(user_input):
-            mem_params["user_id"] = user_id
-        try:
-            # noinspection PyTypeChecker
-            memory_data: MemorySearchResults = await self._memory.search(
-                user_input.text,
-                **mem_params,
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.error("Error searching memory: %s", err)
-            memory_data = {"results": [], "relations": []}
-
-        formatted_memory_string = format_memories(memory_data, self._memory_min_score)
-        if user_input.extra_system_prompt:
-            user_input.extra_system_prompt += f"\n\n{formatted_memory_string}"
-        else:
-            user_input.extra_system_prompt = formatted_memory_string
-
         with (
-            chat_session.async_get_chat_session(
-                self.hass, user_input.conversation_id
-            ) as session,
+            chat_session.async_get_chat_session(self.hass, user_input.conversation_id) as session,
             conversation.async_get_chat_log(self.hass, session, user_input) as chat_log,
         ):
             return await self._async_handle_message(user_input, chat_log)
@@ -306,7 +274,7 @@ class OpenAIConversationPlusEntity(
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        tools: list[ChatCompletionToolParam] | None = None
+        tools: list[ToolParam] | None = None
         if chat_log.llm_api:
             tools = [
                 _format_tool(tool, chat_log.llm_api.custom_serializer)
@@ -314,7 +282,11 @@ class OpenAIConversationPlusEntity(
             ]
 
         model = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
-        messages = [_convert_content_to_param(content) for content in chat_log.content]
+        messages = [
+            m
+            for content in chat_log.content
+            for m in _convert_content_to_param(content)
+        ]
 
         client = self.entry.runtime_data
 
@@ -322,24 +294,28 @@ class OpenAIConversationPlusEntity(
         for _iteration in range(MAX_TOOL_ITERATIONS):
             model_args = {
                 "model": model,
-                "messages": messages,
-                "tools": tools or NOT_GIVEN,
-                "max_completion_tokens": options.get(
+                "input": messages,
+                "max_output_tokens": options.get(
                     CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS
                 ),
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
+                "store": False,
                 "stream": True,
             }
+            if tools:
+                model_args["tools"] = tools
 
             if model.startswith("o"):
-                model_args["reasoning_effort"] = options.get(
-                    CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
-                )
+                model_args["reasoning"] = {
+                    "effort": options.get(
+                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
+                    )
+                }
 
             try:
-                result = await client.chat.completions.create(**model_args)
+                result = await client.responses.create(**model_args)
             except openai.RateLimitError as err:
                 _LOGGER.error("Rate limited by OpenAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
@@ -347,42 +323,29 @@ class OpenAIConversationPlusEntity(
                 _LOGGER.error("Error talking to OpenAI: %s", err)
                 raise HomeAssistantError("Error talking to OpenAI") from err
 
-            messages.extend(
-                [
-                    _convert_content_to_param(content)
-                    async for content in chat_log.async_add_delta_content_stream(
-                        user_input.agent_id, _transform_stream(result)
-                    )
-                ]
-            )
+            async for content in chat_log.async_add_delta_content_stream(
+                user_input.agent_id, _transform_stream(chat_log, result)
+            ):
+                messages.extend(_convert_content_to_param(content))
 
             if not chat_log.unresponded_tool_results:
                 break
-
-        # Schedule throttled memory update
-        await self._schedule_memory_update(chat_log, user_input)
 
         intent_response = intent.IntentResponse(language=user_input.language)
         assert type(chat_log.content[-1]) is conversation.AssistantContent
         intent_response.async_set_speech(chat_log.content[-1].content or "")
         return conversation.ConversationResult(
-            response=intent_response, conversation_id=chat_log.conversation_id
+            response=intent_response,
+            conversation_id=chat_log.conversation_id,
+            # continue_conversation=chat_log.continue_conversation,
         )
 
-    # noinspection PyMethodMayBeStatic
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
     ) -> None:
         """Handle options update."""
         # Reload as we update device info + entity name + supported features
         await hass.config_entries.async_reload(entry.entry_id)
-
-    def _memory_user_id(self, user_input: conversation.ConversationInput) -> str | None:
-        if user_input.context and user_input.context.user_id:
-            user_ids = self.entry.options.get(CONF_MEMORY_USER_ID_MAP, {})
-            if user_id_mapped := user_ids.get(user_input.context.user_id):
-                return user_id_mapped
-        return None
 
     async def _schedule_memory_update(
         self, chat_log: conversation.ChatLog, user_input: conversation.ConversationInput
@@ -405,27 +368,25 @@ class OpenAIConversationPlusEntity(
     ):
         """Throttled memory update logic."""
         await asyncio.sleep(self._memory_settings["throttle_seconds"])
-
-        messages_to_process = [
-            {"role": msg.role, "content": msg.content}
-            for msg in chat_log.content[
-                -self._memory_settings["message_history_length"] :
-            ]
-            if isinstance(
-                msg, (conversation.UserContent, conversation.AssistantContent)
-            )
-            and msg.content
-        ]
-
-        if messages_to_process:
-            mem_params = {
-                "agent_id": user_input.agent_id,
-            }
-            if user_id := self._memory_user_id(user_input):
-                mem_params["user_id"] = user_id
-            await self._memory.add(
-                messages=messages_to_process,
-                **mem_params,
-            )
-        else:
-            _LOGGER.debug("No messages to process for memory update.")
+        # messages_to_process = [
+        #     ZepMessage(
+        #         role_type=msg.role,
+        #         content=msg.content,
+        #     )
+        #     chat_log.conversation_id
+        #     for msg in chat_log.content[
+        #         -self._memory_settings["message_history_length"] :
+        #     ]
+        #     if isinstance(
+        #         msg, (conversation.UserContent, conversation.AssistantContent)
+        #     )
+        #     and msg.content
+        # ]
+        #
+        # if messages_to_process:
+        #     await self._memory.memory.add(
+        #         session_id=user_input.conversation_id,
+        #         messages=messages_to_process,
+        #     )
+        # else:
+        #     _LOGGER.debug("No messages to process for memory update.")

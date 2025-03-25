@@ -4,14 +4,16 @@
   "after_dependencies": ["assist_pipeline", "intent"],
   "codeowners": ["@bendikrb"],
   "config_flow": true,
-  "dependencies": ["conversation"],
+  "dependencies": [
+    "conversation",
+    "powerllm"
+  ],
   "documentation": "https://github.com/bendikrb/openai_conversation_plus",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/bendikrb/openai_conversation_plus/issues",
   "requirements": [
-    "openai==1.61.0",
-    "mem0ai==0.1.60"
+    "openai==1.68.2"
   ],
   "version": "0.0.0"
 }
