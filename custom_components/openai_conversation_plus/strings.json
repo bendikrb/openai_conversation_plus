@@ -30,6 +30,10 @@
           "web_search": "Enable web search",
           "search_context_size": "Search context size",
           "user_location": "Include home location",
+          "city": "City",
+          "region": "Region",
+          "country": "Country",
+          "timezone": "Timezone",
           "memory_api_key": "Mem0 API Key",
           "memory_url": "Mem0 URL",
           "memory_user_id_map":  "Mem0 User ID Map"
@@ -40,6 +44,10 @@
           "web_search": "Allow the model to search the web for the latest information before generating a response",
           "search_context_size": "High level guidance for the amount of context window space to use for the search",
           "user_location": "Refine search results based on geography",
+          "city": "The city/town you live in",
+          "region": "The region you live in",
+          "country": "The country you live in",
+          "timezone": "Your timezone",
           "smart_chat_model": "A more capable model that can be used by the primary model for complex tasks",
           "memory_url": "URL to self-hosted mem0 server.",
           "memory_user_id_map":  "Map HA user ids to mem0 user ids."

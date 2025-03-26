@@ -2,28 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from types import MappingProxyType
 from typing import Any
 
 import openai
 import voluptuous as vol
-from voluptuous_openapi import convert
 
-from homeassistant.components.zone import ENTITY_ID_HOME
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import (
-    ATTR_LATITUDE,
-    ATTR_LONGITUDE,
-    CONF_API_KEY,
-    CONF_LLM_HASS_API,
-)
+from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.httpx_client import get_async_client
@@ -174,10 +166,6 @@ class OpenAIPlusOptionsFlow(OptionsFlow):
                 elif user_input.get(CONF_SMART_CHAT_MODEL) in UNSUPPORTED_MODELS:
                     errors[CONF_SMART_CHAT_MODEL] = "model_not_supported"
                 else:
-                    if user_input.get(CONF_WEB_SEARCH) and user_input.get(
-                        CONF_WEB_SEARCH_USER_LOCATION
-                    ):
-                        user_input.update(await self.get_location_data())
                     return self.async_create_entry(title="", data=user_input)
             else:
                 # Re-render the options again, now with the recommended options shown/hidden
@@ -198,60 +186,6 @@ class OpenAIPlusOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(schema),
             errors=errors,
         )
-
-    async def get_location_data(self) -> dict[str, str]:
-        """Get approximate location data of the user."""
-        location_data: dict[str, str] = {}
-        zone_home = self.hass.states.get(ENTITY_ID_HOME)
-        if zone_home is not None:
-            client = openai.AsyncOpenAI(
-                api_key=self.config_entry.data[CONF_API_KEY],
-                base_url=self.config_entry.data.get(CONF_BASE_URL),
-                http_client=get_async_client(self.hass),
-            )
-            location_schema = vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_WEB_SEARCH_CITY,
-                        description="Free text input for the city, e.g. `San Francisco`",
-                    ): str,
-                    vol.Optional(
-                        CONF_WEB_SEARCH_REGION,
-                        description="Free text input for the region, e.g. `California`",
-                    ): str,
-                }
-            )
-            response = await client.responses.create(
-                model=RECOMMENDED_CHAT_MODEL,
-                input=[
-                    {
-                        "role": "system",
-                        "content": "Where are the following coordinates located: "
-                        f"({zone_home.attributes[ATTR_LATITUDE]},"
-                        f" {zone_home.attributes[ATTR_LONGITUDE]})?",
-                    }
-                ],
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "approximate_location",
-                        "description": "Approximate location data of the user "
-                        "for refined web search results",
-                        "schema": convert(location_schema),
-                        "strict": False,
-                    }
-                },
-                store=False,
-            )
-            location_data = location_schema(json.loads(response.output_text) or {})
-
-        if self.hass.config.country:
-            location_data[CONF_WEB_SEARCH_COUNTRY] = self.hass.config.country
-        location_data[CONF_WEB_SEARCH_TIMEZONE] = self.hass.config.time_zone
-
-        _LOGGER.debug("Location data: %s", location_data)
-
-        return location_data
 
 
 async def openai_config_option_schema(
@@ -357,6 +291,32 @@ async def openai_config_option_schema(
                 description={"suggested_value": options.get(CONF_WEB_SEARCH)},
                 default=RECOMMENDED_WEB_SEARCH,
             ): bool,
+            vol.Optional(
+                CONF_WEB_SEARCH_CITY,
+                description={
+                    "suggested_value": options.get(CONF_WEB_SEARCH_CITY)
+                },
+            ): str,
+            vol.Optional(
+                CONF_WEB_SEARCH_REGION,
+                description={
+                    "suggested_value": options.get(CONF_WEB_SEARCH_REGION),
+                },
+            ): str,
+            vol.Optional(
+                CONF_WEB_SEARCH_COUNTRY,
+                description={
+                    "suggested_value": options.get(CONF_WEB_SEARCH_COUNTRY),
+                },
+                default=hass.config.country,
+            ): str,
+            vol.Optional(
+                CONF_WEB_SEARCH_COUNTRY,
+                description={
+                    "suggested_value": options.get(CONF_WEB_SEARCH_TIMEZONE),
+                },
+                default=hass.config.time_zone,
+            ): str,
             vol.Optional(
                 CONF_WEB_SEARCH_CONTEXT_SIZE,
                 description={
