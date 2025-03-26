@@ -5,7 +5,6 @@ from datetime import datetime
 import json
 from typing import Any, Literal
 
-from memory import MemorySettings
 import openai
 from openai._streaming import AsyncStream
 from openai.types.responses import (
@@ -54,6 +53,7 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
+from .memory import MemorySettings
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
